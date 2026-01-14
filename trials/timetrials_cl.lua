@@ -43,6 +43,13 @@ local raceScoreColors = {
     {167, 112, 68, 255}
 }
 
+local function getRaceType(race)
+    if race and race.raceType then
+        return race.raceType
+    end
+    return "car"
+end
+
 local driftConfigDefaults = {
     minSpeed = 5.5,
     maxSpeedCap = 40.0,
@@ -230,13 +237,6 @@ function preRace()
             end
         end
     end
-end
-
-getRaceType = function(race)
-    if race and race.raceType then
-        return race.raceType
-    end
-    return "car"
 end
 
 local function isVehicleAllowedForRace(vehicle, raceType)
