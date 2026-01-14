@@ -20,13 +20,14 @@ races = {
         title = "LS Drift Park",
         isEnabled = true,
         raceType = "drift",
+        showWaypoints = true,
+        checkpointRadius = 18.0,
+        checkpointTransparency = 1.0,
         mapBlipId = 315,
         mapBlipColor = 46,
         driftLeaderboardId = "ls_drift_park",
         start = { x = -1030.0, y = -2540.0, z = 13.0, heading = 330.0, type = 16 },
         driftConfig = {
-            zoneRadius = 180.0,
-            sessionTimeLimitMs = 180000,
             minSpeed = 5.5,
             maxSpeedCap = 40.0,
             minSlipAngle = 15.0,
@@ -35,6 +36,11 @@ races = {
             updateIntervalMs = 80,
             stopGraceMs = 5000,
             speedUnit = "mph"
+        },
+        checkpoints = {
+            { x = -1105.0, y = -2625.0, z = 13.0, heading = 320.0, type = 16 },
+            { x = -1015.0, y = -2735.0, z = 13.0, heading = 60.0, type = 16 },
+            { x = -930.0, y = -2615.0, z = 13.0, heading = 150.0, type = 4 }
         }
     },
 

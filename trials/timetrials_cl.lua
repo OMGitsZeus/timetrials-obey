@@ -1,3 +1,6 @@
+-- FIX: forward declaration to avoid nil getRaceType error
+local getRaceType
+
 -- Local parameters
 local START_PROMPT_DISTANCE = 5.0              -- distance to prompt to start race
 local DRAW_TEXT_DISTANCE = 100.0                -- distance to start rendering the race name text
@@ -52,8 +55,6 @@ local driftConfigDefaults = {
     stopGraceMs = 5000,
     minLateralSpeed = 1.5,
     collisionCooldownMs = 1000,
-    sessionTimeLimitMs = 180000,
-    zoneRadius = 150.0,
     speedUnit = "mph"
 }
 
@@ -73,8 +74,7 @@ local driftState = {
     stopTimerStart = 0,
     lastCollisionTime = 0,
     lastBodyHealth = nil,
-    lastEngineHealth = nil,
-    sessionTimeLimit = 0
+    lastEngineHealth = nil
 }
 
 -- Create preRace thread
@@ -232,7 +232,7 @@ function preRace()
     end
 end
 
-local function getRaceType(race)
+getRaceType = function(race)
     if race and race.raceType then
         return race.raceType
     end
@@ -646,7 +646,6 @@ local function resetDriftState()
     driftState.lastCollisionTime = 0
     driftState.lastBodyHealth = nil
     driftState.lastEngineHealth = nil
-    driftState.sessionTimeLimit = 0
 end
 
 local function checkDriftCollision(vehicle, config, now)
@@ -915,17 +914,211 @@ AddEventHandler("raceCountdown", function()
     
     -- Teleport player to start and set heading
     teleportToCoord(race.start.x, race.start.y, race.start.z + 4.0, race.start.heading)
-    
+
     Citizen.CreateThread(function()
         runRaceCinematic(race, function()
             -- Enable acceleration/reverse once race starts
             EnableControlAction(2, 71, true)
             EnableControlAction(2, 72, true)
 
-            -- Start race
-            TriggerEvent("raceRaceActive")
+            if raceType == "drift" then
+                TriggerEvent("driftRaceActive")
+            else
+                -- Start race
+                TriggerEvent("raceRaceActive")
+            end
         end)
     end)
+end)
+
+RegisterNetEvent("driftRaceActive")
+AddEventHandler("driftRaceActive", function()
+    local race = races[raceState.index]
+    local config = getDriftConfig(race)
+    local player = GetPlayerPed(-1)
+    local vehicle = GetVehiclePedIsUsing(player)
+    if not DoesEntityExist(vehicle) then
+        raceState.index = 0
+        preRace()
+        return
+    end
+
+    resetDriftState()
+    driftState.active = true
+    driftState.raceIndex = raceState.index
+    driftState.state = "idle"
+    driftState.startTime = GetGameTimer()
+    driftState.lastUpdate = driftState.startTime
+    driftState.lastPosition = GetEntityCoords(vehicle)
+    driftState.lastBodyHealth = GetVehicleBodyHealth(vehicle)
+    driftState.lastEngineHealth = GetVehicleEngineHealth(vehicle)
+
+    showDriftSummary(false)
+    showDriftHud(true)
+
+    raceState.startTime = GetGameTimer()
+    spawnRacePropsForRace(race)
+    checkpoint = CreateCheckpoint(race.checkpoints[raceState.cP].type, race.checkpoints[raceState.cP].x,  race.checkpoints[raceState.cP].y,  race.checkpoints[raceState.cP].z + CHECKPOINT_Z_OFFSET, race.checkpoints[raceState.cP].x,race.checkpoints[raceState.cP].y, race.checkpoints[raceState.cP].z, race.checkpointRadius, 204, 204, 1, math.ceil(255*race.checkpointTransparency), 0)
+    raceState.blip = AddBlipForCoord(race.checkpoints[raceState.cP].x, race.checkpoints[raceState.cP].y, race.checkpoints[raceState.cP].z)
+
+    if race.showWaypoints == true then
+        SetNewWaypoint(race.checkpoints[raceState.cP+1].x, race.checkpoints[raceState.cP+1].y)
+    end
+
+    while raceState.index ~= 0 do
+        Citizen.Wait(1)
+
+        if IsControlJustReleased(0, 182) and GetLastInputMethod(0) then
+            DeleteCheckpoint(checkpoint)
+            RemoveBlip(raceState.blip)
+            cleanupRaceProps()
+            finalizeDriftSession(race, config, "Canceled - not saved", false)
+            return
+        end
+
+        local checkpointDist = math.floor(GetDistanceBetweenCoords(race.checkpoints[raceState.cP].x,  race.checkpoints[raceState.cP].y,  race.checkpoints[raceState.cP].z, GetEntityCoords(player)))
+        DrawHudText(("%.3fs"):format((GetGameTimer() - raceState.startTime)/1000), RACING_HUD_COLOR, 0.015, 0.725, 0.7, 0.7)
+        DrawHudText(string.format("Checkpoint %i / %i (%d m)", raceState.cP, #race.checkpoints, checkpointDist), RACING_HUD_COLOR, 0.015, 0.765, 0.5, 0.5)
+
+        local now = GetGameTimer()
+        if now - driftState.lastUpdate >= config.updateIntervalMs then
+            local dt = (now - driftState.lastUpdate) / 1000.0
+            driftState.lastUpdate = now
+
+            local currentVehicle = GetVehiclePedIsUsing(player)
+            if currentVehicle == 0 then
+                DeleteCheckpoint(checkpoint)
+                RemoveBlip(raceState.blip)
+                cleanupRaceProps()
+                finalizeDriftSession(race, config, "Ended - not saved", false)
+                return
+            end
+
+            local speed = GetEntitySpeed(currentVehicle)
+            local slipAngle = getSlipAngle(currentVehicle)
+            local absSlipAngle = math.abs(slipAngle)
+            local speedVector = GetEntitySpeedVector(currentVehicle, true)
+            local lateralSpeed = math.abs(speedVector.y)
+            local throttle = GetControlNormal(0, 71) > 0.15
+
+            local isValidSurface = IsVehicleOnAllWheels(currentVehicle) and not IsEntityInAir(currentVehicle)
+            local isUpright = not IsEntityUpsidedown(currentVehicle)
+            local isAlive = not IsEntityDead(player)
+            local speedInRange = speed >= config.minSpeed and speed <= (config.maxSpeedCap * 3.0)
+            local angleInRange = absSlipAngle >= config.minSlipAngle and absSlipAngle <= config.maxSlipAngleCap
+            local intentDetected = throttle or lateralSpeed > config.minLateralSpeed
+
+            local isDrifting = isValidSurface and isUpright and isAlive and speedInRange and angleInRange and intentDetected
+
+            local position = GetEntityCoords(currentVehicle)
+            if driftState.lastPosition then
+                local distanceMoved = #(position - driftState.lastPosition)
+                if dt > 0 and distanceMoved > (speed * dt * 3.0 + 10.0) then
+                    isDrifting = false
+                    driftState.currentCombo = 0
+                    driftState.driftDuration = 0
+                    driftState.multiplier = 1
+                end
+            end
+            driftState.lastPosition = position
+
+            if checkDriftCollision(currentVehicle, config, now) then
+                driftState.currentCombo = 0
+                driftState.driftDuration = 0
+                driftState.multiplier = 1
+                driftState.state = "idle"
+                driftState.stopTimerStart = 0
+                updateDriftCountdown(false, 0)
+                flashCollision()
+                isDrifting = false
+            end
+
+            if isDrifting then
+                driftState.state = "drift_active"
+                driftState.stopTimerStart = 0
+                updateDriftCountdown(false, 0)
+                driftState.driftDuration = driftState.driftDuration + (dt * 1000.0)
+                driftState.multiplier = getMultiplierForDuration(driftState.driftDuration)
+
+                local angleFactor = clamp((absSlipAngle - config.minSlipAngle) / (config.maxSlipAngleCap - config.minSlipAngle), 0.0, 1.0)
+                local speedFactor = clamp((speed - config.minSpeed) / (config.maxSpeedCap - config.minSpeed), 0.0, 1.0)
+                angleFactor = clamp(angleFactor * config.angleScale, 0.0, 1.0)
+                speedFactor = clamp(speedFactor * config.speedScale, 0.0, 1.0)
+                local pointsThisTick = config.basePointsPerSecond * dt * (0.5 + 1.5 * angleFactor) * (0.5 + 1.0 * speedFactor) * driftState.multiplier
+                driftState.currentCombo = driftState.currentCombo + pointsThisTick
+                if driftState.currentCombo > driftState.bestCombo then
+                    driftState.bestCombo = driftState.currentCombo
+                end
+                if absSlipAngle > driftState.bestAngle then
+                    driftState.bestAngle = absSlipAngle
+                end
+            else
+                if driftState.currentCombo > 0 then
+                    if driftState.stopTimerStart == 0 then
+                        driftState.stopTimerStart = now
+                        driftState.state = "drift_stop_grace"
+                    end
+                    local elapsed = now - driftState.stopTimerStart
+                    local remaining = math.max(0, math.ceil((config.stopGraceMs - elapsed) / 1000))
+                    updateDriftCountdown(true, remaining)
+                    if elapsed >= config.stopGraceMs then
+                        driftState.bankedTotal = driftState.bankedTotal + driftState.currentCombo
+                        driftState.currentCombo = 0
+                        driftState.stopTimerStart = 0
+                        updateDriftCountdown(false, 0)
+                    end
+                else
+                    driftState.state = "idle"
+                    updateDriftCountdown(false, 0)
+                end
+                driftState.driftDuration = 0
+                driftState.multiplier = 1
+            end
+
+            local speedDisplay, speedUnit = getSpeedDisplay(speed, config.speedUnit)
+            local anglePercent = clamp((absSlipAngle / config.maxSlipAngleCap) * 100.0, 0.0, 100.0)
+            updateDriftHud({
+                combo = driftState.currentCombo,
+                total = driftState.bankedTotal,
+                multiplier = driftState.multiplier,
+                angle = absSlipAngle,
+                anglePercent = anglePercent,
+                speed = speedDisplay,
+                speedUnit = speedUnit
+            })
+        end
+
+        if GetDistanceBetweenCoords(race.checkpoints[raceState.cP].x,  race.checkpoints[raceState.cP].y,  race.checkpoints[raceState.cP].z, GetEntityCoords(player)) < race.checkpointRadius then
+            DeleteCheckpoint(checkpoint)
+            RemoveBlip(raceState.blip)
+            PlaySoundFrontend(-1, "RACE_PLACED", "HUD_AWARDS")
+
+            if raceState.cP == #(race.checkpoints) then
+                if driftState.currentCombo > 0 then
+                    driftState.bankedTotal = driftState.bankedTotal + driftState.currentCombo
+                    driftState.currentCombo = 0
+                end
+                driftState.bankedTotal = math.floor(driftState.bankedTotal)
+                cleanupRaceProps()
+                finalizeDriftSession(race, config, "Saved", true)
+                return
+            end
+
+            raceState.cP = math.ceil(raceState.cP+1)
+            if race.checkpoints[raceState.cP].type == 16 then
+                checkpoint = CreateCheckpoint(race.checkpoints[raceState.cP].type, race.checkpoints[raceState.cP].x,  race.checkpoints[raceState.cP].y,  race.checkpoints[raceState.cP].z + CHECKPOINT_Z_OFFSET, race.checkpoints[raceState.cP].x, race.checkpoints[raceState.cP].y, race.checkpoints[raceState.cP].z, race.checkpointRadius, 204, 204, 1, math.ceil(255*race.checkpointTransparency), 0)
+                raceState.blip = AddBlipForCoord(race.checkpoints[raceState.cP].x, race.checkpoints[raceState.cP].y, race.checkpoints[raceState.cP].z)
+                SetNewWaypoint(race.checkpoints[raceState.cP+1].x, race.checkpoints[raceState.cP+1].y)
+            elseif race.checkpoints[raceState.cP].type == 4 then
+                checkpoint = CreateCheckpoint(race.checkpoints[raceState.cP].type, race.checkpoints[raceState.cP].x,  race.checkpoints[raceState.cP].y,  race.checkpoints[raceState.cP].z + 4.0, race.checkpoints[raceState.cP].x, race.checkpoints[raceState.cP].y, race.checkpoints[raceState.cP].z, race.checkpointRadius, 204, 204, 1, math.ceil(255*race.checkpointTransparency), 0)
+                raceState.blip = AddBlipForCoord(race.checkpoints[raceState.cP].x, race.checkpoints[raceState.cP].y, race.checkpoints[raceState.cP].z)
+                SetNewWaypoint(race.checkpoints[raceState.cP].x, race.checkpoints[raceState.cP].y)
+            end
+        end
+    end
+
+    cleanupRaceProps()
+    preRace()
 end)
 
 -- Main race function
