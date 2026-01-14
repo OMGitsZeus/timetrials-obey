@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drift HUD</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="hud" class="hud hidden">
+    <div class="hud__panel">
+      <div class="hud__combo">
+        <div class="label">Current Combo</div>
+        <div id="comboScore" class="value">0</div>
+        <div class="multiplier" id="multiplier">x1</div>
+      </div>
+      <div class="hud__stats">
+        <div class="stat">
+          <div class="label">Banked Total</div>
+          <div id="bankedTotal" class="value small">0</div>
+        </div>
+        <div class="stat">
+          <div class="label">Speed</div>
+          <div id="speed" class="value small">0 mph</div>
+        </div>
+        <div class="stat">
+          <div class="label">Angle</div>
+          <div id="angle" class="value small">0°</div>
+          <div class="bar">
+            <div id="angleBar" class="bar__fill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="collision" class="hud__alert">Collision!</div>
+    <div id="stopCountdown" class="hud__countdown">Drift End in: <span>5</span></div>
+  </div>
+
+  <div id="summary" class="summary hidden">
+    <div class="summary__panel">
+      <div class="summary__title">Drift Session Complete</div>
+      <div class="summary__row">
+        <span>Total Score</span>
+        <strong id="summaryTotal">0</strong>
+      </div>
+      <div class="summary__row">
+        <span>Best Combo</span>
+        <strong id="summaryCombo">0</strong>
+      </div>
+      <div class="summary__row">
+        <span>Best Angle</span>
+        <strong id="summaryAngle">0°</strong>
+      </div>
+      <div class="summary__row">
+        <span>Duration</span>
+        <strong id="summaryDuration">0s</strong>
+      </div>
+      <div class="summary__status" id="summaryStatus">Saved</div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

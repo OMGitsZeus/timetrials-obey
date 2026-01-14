@@ -1,13 +1,13 @@
 -- Filename to store scores
-local scoreFileName = "./drift_scores.json"
+local scoreFileName = "./scores.json"
+local driftScoreFileName = "./drift_scores.json"
 
 -- Colors for printing scores
 local color_finish = {238, 198, 78}
 local color_highscore = {238, 78, 118}
 
--- Save scores to JSON file
-function saveScores(scores)
-    local file = io.open(scoreFileName, "w+")
+local function saveScores(fileName, scores)
+    local file = io.open(fileName, "w+")
     if file then
         local contents = json.encode(scores)
         file:write(contents)
@@ -18,26 +18,39 @@ function saveScores(scores)
     end
 end
 
--- Load scores from JSON file
-function getScores()
-    local contents = ""
+local function loadScores(fileName)
     local myTable = {}
-    local file = io.open(scoreFileName, "r")
+    local file = io.open(fileName, "r")
     if file then
-        -- read all contents of file into a string
         local contents = file:read("*a")
-        myTable = json.decode(contents);
+        if contents and contents ~= "" then
+            local decoded = json.decode(contents)
+            if type(decoded) == "table" then
+                myTable = decoded
+            end
+        end
         io.close( file )
         return myTable
     end
     return {}
 end
 
+local function getPrimaryIdentifier(playerId)
+    local identifiers = GetPlayerIdentifiers(playerId)
+    for _, identifier in ipairs(identifiers) do
+        if string.find(identifier, "license:") then
+            return identifier
+        end
+    end
+    return identifiers[1] or ("player:" .. tostring(playerId))
+end
+
 -- Create thread to send scores to clients every 5s
 Citizen.CreateThread(function()
     while (true) do
         Citizen.Wait(5000)
-        TriggerClientEvent('raceReceiveScores', -1, getScores())
+        TriggerClientEvent('raceReceiveScores', -1, loadScores(scoreFileName))
+        TriggerClientEvent('driftReceiveScores', -1, loadScores(driftScoreFileName))
     end
 end)
 
@@ -48,7 +61,7 @@ AddEventHandler('racePlayerFinished', function(source, message, title, newScore)
     local msgAppend = ""
     local msgSource = source
     local msgColor = color_finish
-    local allScores = getScores()
+    local allScores = loadScores(scoreFileName)
     local raceScores = allScores[title]
     if raceScores ~= nil then
         -- Compare top score and update if new one is faster
@@ -77,8 +90,32 @@ AddEventHandler('racePlayerFinished', function(source, message, title, newScore)
     
     -- Save and store scores back to file
     allScores[title] = raceScores
-    saveScores(allScores)
+    saveScores(scoreFileName, allScores)
     
     -- Trigger message to all players
     TriggerClientEvent('chatMessage', -1, "[RACE]", msgColor, message .. msgAppend)
+end)
+
+RegisterServerEvent('driftSubmitScore')
+AddEventHandler('driftSubmitScore', function(raceId, scorePayload)
+    local playerId = source
+    if type(raceId) ~= "string" or type(scorePayload) ~= "table" then
+        return
+    end
+    local allScores = loadScores(driftScoreFileName)
+    local leaderboardKey = "leaderboard_drift_" .. raceId
+    local leaderboard = allScores[leaderboardKey] or {}
+    local identifier = getPrimaryIdentifier(playerId)
+    local existing = leaderboard[identifier]
+    if not existing or (scorePayload.bestScore or 0) > (existing.bestScore or 0) then
+        leaderboard[identifier] = scorePayload
+        allScores[leaderboardKey] = leaderboard
+        saveScores(driftScoreFileName, allScores)
+    end
+    TriggerClientEvent('driftScoreSaved', playerId, true)
+end)
+
+RegisterServerEvent('driftRequestScores')
+AddEventHandler('driftRequestScores', function()
+    TriggerClientEvent('driftReceiveScores', source, loadScores(driftScoreFileName))
 end)
