@@ -16,6 +16,33 @@ races = {
             { x = -50.0, y = 6326.0, z = 31.0, heading = 135.0, type = 4 }          -- Race checkpoints, type 9 is a finish line (/saveRaceEnd)
         }
     },
+    {
+        title = "LS Drift Park",
+        isEnabled = true,
+        raceType = "drift",
+        showWaypoints = true,
+        checkpointRadius = 18.0,
+        checkpointTransparency = 1.0,
+        mapBlipId = 315,
+        mapBlipColor = 46,
+        driftLeaderboardId = "ls_drift_park",
+        start = { x = -1030.0, y = -2540.0, z = 13.0, heading = 330.0, type = 16 },
+        driftConfig = {
+            minSpeed = 5.5,
+            maxSpeedCap = 40.0,
+            minSlipAngle = 15.0,
+            maxSlipAngleCap = 55.0,
+            basePointsPerSecond = 120.0,
+            updateIntervalMs = 80,
+            stopGraceMs = 5000,
+            speedUnit = "mph"
+        },
+        checkpoints = {
+            { x = -1105.0, y = -2625.0, z = 13.0, heading = 320.0, type = 16 },
+            { x = -1015.0, y = -2735.0, z = 13.0, heading = 60.0, type = 16 },
+            { x = -930.0, y = -2615.0, z = 13.0, heading = 150.0, type = 4 }
+        }
+    },
 
 {
   title = "Sprunk Air race 4",
