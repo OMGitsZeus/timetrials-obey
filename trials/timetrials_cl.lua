@@ -219,7 +219,11 @@ function preRace()
                     if (IsControlJustReleased(1, 51)) then
                         raceState.index = index
                         raceState.scores = nil
-                        TriggerEvent("raceCountdown")
+                        if raceType == "drift" then
+                            TriggerEvent("driftSessionStart")
+                        else
+                            TriggerEvent("raceCountdown")
+                        end
                         break
                     end
                 end
@@ -723,6 +727,174 @@ RegisterNetEvent("raceReceiveScores")
 AddEventHandler("raceReceiveScores", function(scores)
     -- Save scores to state
     raceState.scores = scores
+end)
+
+RegisterNetEvent("driftSessionStart")
+AddEventHandler("driftSessionStart", function()
+    local race = races[raceState.index]
+    local player = GetPlayerPed(-1)
+    local vehicle = GetVehiclePedIsUsing(player)
+    local raceType = getRaceType(race)
+    if raceType ~= "drift" then
+        return
+    end
+    if not IsPedInAnyVehicle(player, false) or not isVehicleAllowedForRace(vehicle, raceType) then
+        showBigRaceMessage("~r~Wrong vehicle", "Use a drift-capable vehicle.", 2500)
+        raceState.index = 0
+        return
+    end
+    teleportToCoord(race.start.x, race.start.y, race.start.z + 4.0, race.start.heading)
+    FreezeEntityPosition(vehicle, true)
+    for i = 3, 1, -1 do
+        showRaceCountdown(i)
+        Citizen.Wait(1000)
+    end
+    showRaceCountdown(0)
+    FreezeEntityPosition(vehicle, false)
+
+    local config = getDriftConfig(race)
+    resetDriftState()
+    driftState.active = true
+    driftState.raceIndex = raceState.index
+    driftState.state = "idle"
+    driftState.startTime = GetGameTimer()
+    driftState.lastUpdate = driftState.startTime
+    driftState.lastPosition = GetEntityCoords(vehicle)
+    driftState.sessionTimeLimit = config.sessionTimeLimitMs or 0
+    driftState.lastBodyHealth = GetVehicleBodyHealth(vehicle)
+    driftState.lastEngineHealth = GetVehicleEngineHealth(vehicle)
+
+    showDriftSummary(false)
+    showDriftHud(true)
+
+    Citizen.CreateThread(function()
+        while driftState.active do
+            Citizen.Wait(config.updateIntervalMs)
+            local now = GetGameTimer()
+            local dt = (now - driftState.lastUpdate) / 1000.0
+            driftState.lastUpdate = now
+
+            if IsControlJustReleased(0, 182) and GetLastInputMethod(0) then
+                finalizeDriftSession(race, config, "Canceled - not saved", false)
+                break
+            end
+
+            local playerPed = GetPlayerPed(-1)
+            local currentVehicle = GetVehiclePedIsUsing(playerPed)
+            if currentVehicle == 0 then
+                finalizeDriftSession(race, config, "Ended - not saved", false)
+                break
+            end
+
+            local distanceFromStart = GetDistanceBetweenCoords(race.start.x, race.start.y, race.start.z, GetEntityCoords(playerPed))
+            if config.zoneRadius and distanceFromStart > config.zoneRadius then
+                finalizeDriftSession(race, config, "Left drift zone", true)
+                break
+            end
+
+            if driftState.sessionTimeLimit > 0 and now - driftState.startTime >= driftState.sessionTimeLimit then
+                if driftState.state == "drift_stop_grace" and now - driftState.stopTimerStart >= config.stopGraceMs then
+                    driftState.bankedTotal = driftState.bankedTotal + driftState.currentCombo
+                end
+                driftState.currentCombo = 0
+                finalizeDriftSession(race, config, "Time limit reached", true)
+                break
+            end
+
+            local speed = GetEntitySpeed(currentVehicle)
+            local slipAngle = getSlipAngle(currentVehicle)
+            local absSlipAngle = math.abs(slipAngle)
+            local speedVector = GetEntitySpeedVector(currentVehicle, true)
+            local lateralSpeed = math.abs(speedVector.y)
+            local throttle = GetControlNormal(0, 71) > 0.15
+
+            local isValidSurface = IsVehicleOnAllWheels(currentVehicle) and not IsEntityInAir(currentVehicle)
+            local isUpright = not IsEntityUpsidedown(currentVehicle)
+            local isAlive = not IsEntityDead(playerPed)
+            local speedInRange = speed >= config.minSpeed and speed <= (config.maxSpeedCap * 3.0)
+            local angleInRange = absSlipAngle >= config.minSlipAngle and absSlipAngle <= config.maxSlipAngleCap
+            local intentDetected = throttle or lateralSpeed > config.minLateralSpeed
+
+            local isDrifting = isValidSurface and isUpright and isAlive and speedInRange and angleInRange and intentDetected
+
+            local position = GetEntityCoords(currentVehicle)
+            if driftState.lastPosition then
+                local distanceMoved = #(position - driftState.lastPosition)
+                if dt > 0 and distanceMoved > (speed * dt * 3.0 + 10.0) then
+                    isDrifting = false
+                    driftState.currentCombo = 0
+                    driftState.driftDuration = 0
+                    driftState.multiplier = 1
+                end
+            end
+            driftState.lastPosition = position
+
+            if checkDriftCollision(currentVehicle, config, now) then
+                driftState.currentCombo = 0
+                driftState.driftDuration = 0
+                driftState.multiplier = 1
+                driftState.state = "idle"
+                driftState.stopTimerStart = 0
+                updateDriftCountdown(false, 0)
+                flashCollision()
+                isDrifting = false
+            end
+
+            if isDrifting then
+                driftState.state = "drift_active"
+                driftState.stopTimerStart = 0
+                updateDriftCountdown(false, 0)
+                driftState.driftDuration = driftState.driftDuration + (dt * 1000.0)
+                driftState.multiplier = getMultiplierForDuration(driftState.driftDuration)
+
+                local angleFactor = clamp((absSlipAngle - config.minSlipAngle) / (config.maxSlipAngleCap - config.minSlipAngle), 0.0, 1.0)
+                local speedFactor = clamp((speed - config.minSpeed) / (config.maxSpeedCap - config.minSpeed), 0.0, 1.0)
+                angleFactor = clamp(angleFactor * config.angleScale, 0.0, 1.0)
+                speedFactor = clamp(speedFactor * config.speedScale, 0.0, 1.0)
+                local pointsThisTick = config.basePointsPerSecond * dt * (0.5 + 1.5 * angleFactor) * (0.5 + 1.0 * speedFactor) * driftState.multiplier
+                driftState.currentCombo = driftState.currentCombo + pointsThisTick
+                if driftState.currentCombo > driftState.bestCombo then
+                    driftState.bestCombo = driftState.currentCombo
+                end
+                if absSlipAngle > driftState.bestAngle then
+                    driftState.bestAngle = absSlipAngle
+                end
+            else
+                if driftState.currentCombo > 0 then
+                    if driftState.stopTimerStart == 0 then
+                        driftState.stopTimerStart = now
+                        driftState.state = "drift_stop_grace"
+                    end
+                    local elapsed = now - driftState.stopTimerStart
+                    local remaining = math.max(0, math.ceil((config.stopGraceMs - elapsed) / 1000))
+                    updateDriftCountdown(true, remaining)
+                    if elapsed >= config.stopGraceMs then
+                        driftState.bankedTotal = driftState.bankedTotal + driftState.currentCombo
+                        driftState.currentCombo = 0
+                        finalizeDriftSession(race, config, "Saved", true)
+                        break
+                    end
+                else
+                    driftState.state = "idle"
+                    updateDriftCountdown(false, 0)
+                end
+                driftState.driftDuration = 0
+                driftState.multiplier = 1
+            end
+
+            local speedDisplay, speedUnit = getSpeedDisplay(speed, config.speedUnit)
+            local anglePercent = clamp((absSlipAngle / config.maxSlipAngleCap) * 100.0, 0.0, 100.0)
+            updateDriftHud({
+                combo = driftState.currentCombo,
+                total = driftState.bankedTotal,
+                multiplier = driftState.multiplier,
+                angle = absSlipAngle,
+                anglePercent = anglePercent,
+                speed = speedDisplay,
+                speedUnit = speedUnit
+            })
+        end
+    end)
 end)
 
 -- Countdown race start with controls disabled
